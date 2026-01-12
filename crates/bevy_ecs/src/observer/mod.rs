@@ -16,9 +16,10 @@ pub use system_param::*;
 
 use crate::{
     change_detection::MaybeLocation,
-    event::Event,
+    event::{Event, EventKey},
     prelude::*,
-    system::IntoObserverSystem,
+    query::DebugCheckedUnwrap,
+    system::{ConsumerSystem, IntoConsumerSystem, IntoObserverSystem},
     world::{DeferredWorld, *},
 };
 
@@ -56,6 +57,61 @@ impl World {
         system: impl IntoObserverSystem<E, B, M>,
     ) -> EntityWorldMut<'_> {
         self.spawn(Observer::new(system))
+    }
+
+    pub(crate) fn try_set_consumer_with_event_key<E: Event, M, S: ConsumerSystem<E>>(
+        &mut self,
+        event_key: EventKey,
+        system: impl IntoConsumerSystem<E, M, System = S>,
+    ) -> Result<(), Consumer> {
+        self.observers
+            .try_set_consumer(event_key, Consumer::new(system))?;
+        self.commands().queue(move |world: &mut World| {
+            let consumer = unsafe {
+                world
+                    .observers
+                    .try_get_consumer_mut(event_key)
+                    .debug_checked_unwrap()
+            };
+            let system: *mut dyn ConsumerSystem<E> = unsafe {
+                let system: &mut dyn core::any::Any = consumer.system.as_mut();
+                let system = system.downcast_mut::<S>().debug_checked_unwrap();
+                &mut *system
+            };
+            unsafe {
+                (*system).initialize(world);
+            }
+        });
+        Ok(())
+    }
+
+    /// Attempts to set a consumer system for the given [`Event`].
+    ///
+    /// Returns an error containing the given system if a consumer system is already set for the event.
+    pub fn try_set_consumer<E: Event, M, S: ConsumerSystem<E>>(
+        &mut self,
+        system: impl IntoConsumerSystem<E, M, System = S>,
+    ) -> Result<(), S> {
+        let event_key = self.register_event_key::<E>();
+        self.try_set_consumer_with_event_key(event_key, system)
+            .map_err(|c| {
+                let system: alloc::boxed::Box<dyn core::any::Any> = c.system;
+                unsafe { *system.downcast::<S>().debug_checked_unwrap() }
+            })
+    }
+
+    /// Sets a consumer system for the given [`Event`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if a consumer system is already set for the event.
+    pub fn set_consumer<E: Event, M, S: ConsumerSystem<E>>(
+        &mut self,
+        system: impl IntoConsumerSystem<E, M, System = S>,
+    ) {
+        self.try_set_consumer(system)
+            .map_err(|s| s.name())
+            .expect("Consumer system already set for event");
     }
 
     /// Triggers the given [`Event`], which will run any [`Observer`]s watching for it.
@@ -245,9 +301,10 @@ impl World {
 #[cfg(test)]
 mod tests {
     use alloc::{vec, vec::Vec};
-
+    use bevy_ecs::system::ConsumerSystem;
     use bevy_ptr::OwningPtr;
 
+    use crate::observer::Post;
     use crate::{
         change_detection::MaybeLocation,
         event::{EntityComponentsTrigger, Event, GlobalTrigger},
@@ -1101,5 +1158,39 @@ mod tests {
             .get_observers_mut(event_key)
             .component_observers()
             .contains_key(&a));
+    }
+
+    #[test]
+    fn event_consumer() {
+        let mut world = World::new();
+
+        #[derive(Debug)]
+        struct MyEvent {
+            pub data: i32,
+        }
+
+        impl Event for MyEvent {
+            type Trigger<'a> = GlobalTrigger;
+
+            fn consumer_system() -> Option<impl ConsumerSystem<Self>> {
+                fn my_event_consumer(mut event: Post<MyEvent>) {
+                    assert_eq!(event.data, 114514 + 1919810);
+                    event.data /= 2;
+                }
+                Some(IntoSystem::into_system(my_event_consumer))
+            }
+        }
+
+        world.add_observer(|mut e: On<MyEvent>| {
+            e.data += 114514;
+        });
+
+        world.add_observer(|mut e: On<MyEvent>| {
+            e.data += 1919810;
+        });
+
+        let mut event = MyEvent { data: 0 };
+        world.trigger_ref(&mut event);
+        assert_eq!(event.data, (114514 + 1919810) / 2);
     }
 }

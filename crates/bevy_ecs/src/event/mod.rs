@@ -7,6 +7,8 @@ pub use trigger::*;
 use crate::{
     component::{Component, ComponentId},
     entity::Entity,
+    observer::Post,
+    system::{ConsumerSystem, FunctionSystem, HasSystemInput},
     world::World,
 };
 use core::marker::PhantomData;
@@ -88,6 +90,18 @@ use core::marker::PhantomData;
 pub trait Event: Send + Sync + Sized + 'static {
     /// Defines which observers will run, what data will be passed to them, and the order they will be run in. See [`Trigger`] for more info.
     type Trigger<'a>: Trigger<Self>;
+
+    /// Gets the [`ConsumerSystem`] for this event type, if any.
+    fn consumer_system() -> Option<impl ConsumerSystem<Self>> {
+        None::<
+            FunctionSystem<
+                (HasSystemInput, fn(Post<'static, 'static, Self>)),
+                Post<Self>,
+                (),
+                fn(Post<Self>),
+            >,
+        >
+    }
 }
 
 /// An [`EntityEvent`] is an [`Event`] that is triggered for a specific [`EntityEvent::event_target`] entity:
@@ -337,7 +351,11 @@ impl World {
     /// This is used by various dynamically typed observer APIs,
     /// such as [`DeferredWorld::trigger_raw`](crate::world::DeferredWorld::trigger_raw).
     pub fn register_event_key<E: Event>(&mut self) -> EventKey {
-        EventKey(self.register_component::<EventWrapperComponent<E>>())
+        let event_key = EventKey(self.register_component::<EventWrapperComponent<E>>());
+        if let Some(system) = E::consumer_system() {
+            _ = self.try_set_consumer_with_event_key(event_key, system);
+        }
+        event_key
     }
 
     /// Fetches the [`EventKey`] for this event type,

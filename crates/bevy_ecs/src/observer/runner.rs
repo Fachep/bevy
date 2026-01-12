@@ -5,10 +5,10 @@ use core::any::Any;
 use crate::{
     error::ErrorContext,
     event::Event,
-    observer::TriggerContext,
+    observer::{Post, TriggerContext},
     prelude::*,
     query::DebugCheckedUnwrap,
-    system::{ObserverSystem, RunSystemError},
+    system::{ConsumerSystem, ObserverSystem, RunSystemError},
     world::DeferredWorld,
 };
 use bevy_ptr::PtrMut;
@@ -113,6 +113,52 @@ pub(super) unsafe fn observer_system_runner<E: Event, B: Bundle, S: ObserverSyst
                 },
             );
         };
+        (*system).queue_deferred(world.into_deferred());
+    }
+}
+
+/// Type for function that is run when a consumer observer is triggered.
+pub type ConsumerRunner =
+    unsafe fn(DeferredWorld, trigger_context: &TriggerContext, event_ptr: PtrMut);
+
+pub(crate) unsafe fn consumer_system_runner<E: Event, S: ConsumerSystem<E>>(
+    mut world: DeferredWorld,
+    trigger_context: &TriggerContext,
+    event_ptr: PtrMut,
+) {
+    let world = world.as_unsafe_world_cell();
+    let state = unsafe {
+        world
+            .world_mut()
+            .observers
+            .try_get_consumer_mut(trigger_context.event_key)
+            .debug_checked_unwrap()
+    };
+
+    let event = unsafe { event_ptr.deref_mut() };
+    let post = Post::new(event, trigger_context);
+
+    let system: *mut dyn ConsumerSystem<E> = unsafe {
+        let system: &mut dyn Any = state.system.as_mut();
+        let system = system.downcast_mut::<S>().debug_checked_unwrap();
+        &mut *system
+    };
+
+    unsafe {
+        if let Err(RunSystemError::Failed(err)) = (*system)
+            .validate_param_unsafe(world)
+            .map_err(From::from)
+            .and_then(|()| (*system).run_unsafe(post, world))
+        {
+            let handler = world.default_error_handler();
+            handler(
+                err,
+                ErrorContext::Observer {
+                    name: (*system).name(),
+                    last_run: (*system).get_last_run(),
+                },
+            );
+        }
         (*system).queue_deferred(world.into_deferred());
     }
 }

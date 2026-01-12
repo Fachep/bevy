@@ -1,6 +1,5 @@
-use core::ops::Deref;
-
 use bevy_utils::prelude::DebugName;
+use core::ops::Deref;
 
 use crate::{
     archetype::Archetype,
@@ -769,14 +768,15 @@ impl<'w> DeferredWorld<'w> {
         caller: MaybeLocation,
     ) {
         // SAFETY: You cannot get a mutable reference to `observers` from `DeferredWorld`
-        let (mut world, observers) = unsafe {
+        let (mut world, observers, consumer) = unsafe {
             let world = self.as_unsafe_world_cell();
             let observers = world.observers();
+            let consumer = observers.try_get_consumer(event_key);
             let Some(observers) = observers.try_get_observers(event_key) else {
                 return;
             };
             // SAFETY: The only outstanding reference to world is `observers`
-            (world.into_deferred(), observers)
+            (world.into_deferred(), observers, consumer)
         };
         let context = TriggerContext { event_key, caller };
 
@@ -786,6 +786,10 @@ impl<'w> DeferredWorld<'w> {
         // - This method is being called for an `event` whose `Event::Trigger` matches, as the input trigger is E::Trigger.
         unsafe {
             trigger.trigger(world.reborrow(), observers, &context, event);
+        }
+        if let Some(consumer) = consumer {
+            let runner = consumer.runner;
+            runner(world.reborrow(), &context, event.into());
         }
     }
 

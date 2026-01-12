@@ -1,10 +1,9 @@
 use crate::{
     event::Event,
+    observer::Post,
     prelude::{Bundle, On},
-    system::System,
+    system::{IntoSystem, System},
 };
-
-use super::IntoSystem;
 
 /// Implemented for [`System`]s that have [`On`] as the first argument.
 pub trait ObserverSystem<E: Event, B: Bundle, Out = ()>:
@@ -43,6 +42,50 @@ where
     S::System: ObserverSystem<E, B, Out>,
     E: 'static,
     B: Bundle,
+{
+    type System = S::System;
+
+    fn into_system(this: Self) -> Self::System {
+        IntoSystem::into_system(this)
+    }
+}
+
+/// Implemented for [`System`]s that have [`Post`] as the first argument.
+pub trait ConsumerSystem<E: Event, Out = ()>:
+    System<In = Post<'static, 'static, E>, Out = Out> + Send + 'static
+{
+}
+
+impl<E: Event, Out, T> ConsumerSystem<E, Out> for T where
+    T: System<In = Post<'static, 'static, E>, Out = Out> + Send + 'static
+{
+}
+
+/// Implemented for systems that convert into [`ConsumerSystem`].
+///
+/// # Usage notes
+///
+/// This trait should only be used as a bound for trait implementations or as an
+/// argument to a function. If a consumer system needs to be returned from a
+/// function or stored somewhere, use [`ConsumerSystem`] instead of this trait.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot become a `ConsumerSystem`",
+    label = "the trait `IntoConsumerSystem` is not implemented",
+    note = "for function `ConsumerSystem`s, ensure the first argument is `Post<T>` and any subsequent ones are `SystemParam`"
+)]
+pub trait IntoConsumerSystem<E: Event, M, Out = ()>: Send + 'static {
+    /// The type of [`System`] that this instance converts into.
+    type System: ConsumerSystem<E, Out>;
+
+    /// Turns this value into its corresponding [`System`].
+    fn into_system(this: Self) -> Self::System;
+}
+
+impl<E: Event, M, Out, S> IntoConsumerSystem<E, M, Out> for S
+where
+    S: IntoSystem<Post<'static, 'static, E>, Out, M> + Send + 'static,
+    S::System: ConsumerSystem<E, Out>,
+    E: 'static,
 {
     type System = S::System;
 

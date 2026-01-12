@@ -2,7 +2,12 @@ use core::ops::{Deref, DerefMut};
 
 use variadics_please::all_tuples;
 
-use crate::{bundle::Bundle, event::Event, prelude::On, system::System};
+use crate::{
+    bundle::Bundle,
+    event::Event,
+    observer::{On, Post},
+    system::System,
+};
 
 /// Trait for types that can be used as input to [`System`]s.
 ///
@@ -253,6 +258,15 @@ impl<E: Event, B: Bundle> SystemInput for On<'_, '_, E, B> {
     // the `On` implementation.
     type Param<'i> = On<'i, 'i, E, B>;
     type Inner<'i> = On<'i, 'i, E, B>;
+
+    fn wrap(this: Self::Inner<'_>) -> Self::Param<'_> {
+        this
+    }
+}
+
+impl<E: Event> SystemInput for Post<'_, '_, E> {
+    type Param<'i> = Post<'i, 'i, E>;
+    type Inner<'i> = Post<'i, 'i, E>;
 
     fn wrap(this: Self::Inner<'_>) -> Self::Param<'_> {
         this

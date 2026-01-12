@@ -189,6 +189,64 @@ impl<'w, 't, E: Event, B: Bundle> DerefMut for On<'w, 't, E, B> {
     }
 }
 
+/// A [system parameter] used by an observer to consume events after they have been processed by observers.
+///
+/// [system parameter]: crate::system::SystemParam
+pub struct Post<'w, 'e, E: Event> {
+    event: &'e mut E,
+    trigger_context: &'w TriggerContext,
+}
+
+impl<'w, 'e, E: Event> Post<'w, 'e, E> {
+    /// Creates a new instance of [`Post`] for the given triggered event.
+    pub fn new(event: &'e mut E, trigger_context: &'w TriggerContext) -> Self {
+        Self {
+            event,
+            trigger_context,
+        }
+    }
+
+    /// Returns a reference to the triggered event.
+    pub fn event(&self) -> &E {
+        self.event
+    }
+
+    /// Returns a mutable reference to the triggered event.
+    pub fn event_mut(&mut self) -> &mut E {
+        self.event
+    }
+
+    /// Returns the event type of this [`Post`] instance.
+    pub fn event_key(&self) -> EventKey {
+        self.trigger_context.event_key
+    }
+
+    /// Returns the source code location that triggered this observer, if the `track_location` cargo feature is enabled.
+    pub fn caller(&self) -> MaybeLocation {
+        self.trigger_context.caller
+    }
+}
+
+impl<'w, 'e, E: Event + Debug> Debug for Post<'w, 'e, E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Post").field("event", &self.event).finish()
+    }
+}
+
+impl<'w, 'e, E: Event> Deref for Post<'w, 'e, E> {
+    type Target = E;
+
+    fn deref(&self) -> &Self::Target {
+        self.event
+    }
+}
+
+impl<'w, 'e, E: Event> DerefMut for Post<'w, 'e, E> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.event
+    }
+}
+
 /// Metadata about a specific [`Event`] that triggered an observer.
 ///
 /// This information is exposed via methods on [`On`].

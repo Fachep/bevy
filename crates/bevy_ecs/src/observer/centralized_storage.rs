@@ -9,11 +9,16 @@
 //!     - These are split by target type, in order to allow for different lookup strategies.
 //!     - [`CachedComponentObservers`] is one of these maps, which contains observers that are specifically targeted at a component.
 
+use alloc::boxed::Box;
 use bevy_platform::collections::HashMap;
-
+use bevy_utils::prelude::DebugName;
 use crate::{
-    archetype::ArchetypeFlags, component::ComponentId, entity::EntityHashMap, event::EventKey,
-    observer::ObserverRunner,
+    archetype::ArchetypeFlags,
+    component::ComponentId,
+    entity::EntityHashMap,
+    event::{Event, EventKey},
+    observer::{consumer_system_runner, AnyNamedSystem, ConsumerRunner, ObserverRunner},
+    system::{IntoConsumerSystem, IntoSystem, System},
 };
 
 /// An internal lookup table tracking all of the observers in the world.
@@ -33,6 +38,7 @@ pub struct Observers {
     despawn: CachedObservers,
     // Map from event type to set of observers watching for that event
     cache: HashMap<EventKey, CachedObservers>,
+    consumers: HashMap<EventKey, Consumer>,
 }
 
 impl Observers {
@@ -110,6 +116,25 @@ impl Observers {
             flags.insert(ArchetypeFlags::ON_DESPAWN_OBSERVER);
         }
     }
+
+    /// Attempts to get the consumer for the given `event_key`.
+    pub fn try_get_consumer(&self, event_key: EventKey) -> Option<&Consumer> {
+        self.consumers.get(&event_key)
+    }
+
+    pub(crate) fn try_get_consumer_mut(&mut self, event_key: EventKey) -> Option<&mut Consumer> {
+        self.consumers.get_mut(&event_key)
+    }
+
+    pub(crate) fn try_set_consumer(
+        &mut self,
+        event_key: EventKey,
+        consumer: Consumer,
+    ) -> Result<&mut Consumer, Consumer> {
+        self.consumers
+            .try_insert(event_key, consumer)
+            .map_err(|e| e.value)
+    }
 }
 
 /// Collection of [`ObserverRunner`] for [`Observer`](crate::observer::Observer) registered to a particular event.
@@ -167,5 +192,58 @@ impl CachedComponentObservers {
     /// Returns observers watching for events targeting this component on a specific entity
     pub fn entity_component_observers(&self) -> &EntityHashMap<ObserverMap> {
         &self.entity_component_observers
+    }
+}
+
+/// A [`Consumer`] System.
+///
+/// Consumer runs after all observers have been triggered for a given event.
+pub struct Consumer {
+    pub(crate) system: Box<dyn AnyNamedSystem>,
+    pub(crate) runner: ConsumerRunner,
+}
+
+impl Consumer {
+    /// Creates a new [`Consumer`] from the given system.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the given system is an exclusive system.
+    pub fn new<E: Event, M, I: IntoConsumerSystem<E, M>>(system: I) -> Self {
+        let system = Box::new(IntoConsumerSystem::into_system(system));
+        assert!(
+            !system.is_exclusive(),
+            concat!(
+            "Exclusive system `{}` may not be used as consumer.\n",
+            "Instead of `&mut World`, use either `DeferredWorld` if you do not need structural changes, or `Commands` if you do."
+            ),
+            system.name()
+        );
+        Self {
+            system,
+            runner: consumer_system_runner::<E, I::System>,
+        }
+    }
+
+    /// Creates a new [`Consumer`] with custom runner
+    pub fn with_dynamic_runner(runner: ConsumerRunner) -> Self {
+        Self {
+            system: Box::new(IntoSystem::into_system(|| {})),
+            runner,
+        }
+    }
+
+    /// Returns the name of the [`Consumer`]'s system .
+    pub fn system_name(&self) -> DebugName {
+        self.system.system_name()
+    }
+}
+
+impl core::fmt::Debug for Consumer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Consumer")
+            .field("system", &self.system.system_name())
+            .field("runner", &self.runner)
+            .finish()
     }
 }
